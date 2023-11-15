@@ -63,7 +63,53 @@ where
     Ok(AllocatedPoint { x, y, is_infinity })
   }
 
-  /// Allocates a default point on the curve.
+  /// checks if `self` is on the curve or if it is infinity
+  pub fn check_on_curve<CS>(&self, mut cs: CS) -> Result<(), SynthesisError>
+  where
+    CS: ConstraintSystem<G::Base>,
+  {
+    // check that (x,y) is on the curve if it is not infinity
+    // we will check that (1- is_infinity) * y^2 = (1-is_infinity) * (x^3 + Ax + B)
+    // note that is_infinity is already restricted to be in the set {0, 1}
+    let y_square = self.y.square(cs.namespace(|| "y_square"))?;
+    let x_square = self.x.square(cs.namespace(|| "x_square"))?;
+    let x_cube = self.x.mul(cs.namespace(|| "x_cube"), &x_square)?;
+
+    let rhs = AllocatedNum::alloc(cs.namespace(|| "rhs"), || {
+      if *self.is_infinity.get_value().get()? == G::Base::ONE {
+        Ok(G::Base::ZERO)
+      } else {
+        Ok(
+          *x_cube.get_value().get()?
+            + *self.x.get_value().get()? * G::get_curve_params().0
+            + G::get_curve_params().1,
+        )
+      }
+    })?;
+
+    cs.enforce(
+      || "rhs = (1-is_infinity) * (x^3 + Ax + B)",
+      |lc| {
+        lc + x_cube.get_variable()
+          + (G::get_curve_params().0, self.x.get_variable())
+          + (G::get_curve_params().1, CS::one())
+      },
+      |lc| lc + CS::one() - self.is_infinity.get_variable(),
+      |lc| lc + rhs.get_variable(),
+    );
+
+    // check that (1-infinity) * y_square = rhs
+    cs.enforce(
+      || "check that y_square * (1 - is_infinity) = rhs",
+      |lc| lc + y_square.get_variable(),
+      |lc| lc + CS::one() - self.is_infinity.get_variable(),
+      |lc| lc + rhs.get_variable(),
+    );
+
+    Ok(())
+  }
+
+  /// Allocates a default point on the curve, set to the identity point.
   pub fn default<CS>(mut cs: CS) -> Result<Self, SynthesisError>
   where
     CS: ConstraintSystem<G::Base>,
@@ -748,13 +794,16 @@ where
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::bellpepper::{
-    r1cs::{NovaShape, NovaWitness},
-    {solver::SatisfyingAssignment, test_shape_cs::TestShapeCS},
-  };
   use crate::provider::{
     bn256_grumpkin::{bn256, grumpkin},
     secp_secq::{secp256k1, secq256k1},
+  };
+  use crate::{
+    bellpepper::{
+      r1cs::{NovaShape, NovaWitness},
+      {solver::SatisfyingAssignment, test_shape_cs::TestShapeCS},
+    },
+    traits::snark::default_ck_hint,
   };
   use ff::{Field, PrimeFieldBits};
   use pasta_curves::{arithmetic::CurveAffine, group::Curve, pallas, vesta};
@@ -1000,10 +1049,10 @@ mod tests {
     let mut cs: TestShapeCS<G2> = TestShapeCS::new();
     let _ = synthesize_smul::<G1, _>(cs.namespace(|| "synthesize"));
     println!("Number of constraints: {}", cs.num_constraints());
-    let (shape, ck) = cs.r1cs_shape();
+    let (shape, ck) = cs.r1cs_shape(&*default_ck_hint());
 
     // Then the satisfying assignment
-    let mut cs: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
+    let mut cs = SatisfyingAssignment::<G2>::new();
     let (a, e, s) = synthesize_smul::<G1, _>(cs.namespace(|| "synthesize"));
     let (inst, witness) = cs.r1cs_instance_and_witness(&shape, &ck).unwrap();
 
@@ -1056,10 +1105,10 @@ mod tests {
     let mut cs: TestShapeCS<G2> = TestShapeCS::new();
     let _ = synthesize_add_equal::<G1, _>(cs.namespace(|| "synthesize add equal"));
     println!("Number of constraints: {}", cs.num_constraints());
-    let (shape, ck) = cs.r1cs_shape();
+    let (shape, ck) = cs.r1cs_shape(&*default_ck_hint());
 
     // Then the satisfying assignment
-    let mut cs: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
+    let mut cs = SatisfyingAssignment::<G2>::new();
     let (a, e) = synthesize_add_equal::<G1, _>(cs.namespace(|| "synthesize add equal"));
     let (inst, witness) = cs.r1cs_instance_and_witness(&shape, &ck).unwrap();
     let a_p: Point<G1> = Point::new(
@@ -1116,10 +1165,10 @@ mod tests {
     let mut cs: TestShapeCS<G2> = TestShapeCS::new();
     let _ = synthesize_add_negation::<G1, _>(cs.namespace(|| "synthesize add equal"));
     println!("Number of constraints: {}", cs.num_constraints());
-    let (shape, ck) = cs.r1cs_shape();
+    let (shape, ck) = cs.r1cs_shape(&*default_ck_hint());
 
     // Then the satisfying assignment
-    let mut cs: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
+    let mut cs = SatisfyingAssignment::<G2>::new();
     let e = synthesize_add_negation::<G1, _>(cs.namespace(|| "synthesize add negation"));
     let (inst, witness) = cs.r1cs_instance_and_witness(&shape, &ck).unwrap();
     let e_p: Point<G1> = Point::new(

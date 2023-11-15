@@ -113,7 +113,7 @@ impl<G: Group> NIFS<G> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{r1cs::SparseMatrix, r1cs::R1CS, traits::Group};
+  use crate::{r1cs::SparseMatrix, r1cs::R1CS, traits::snark::default_ck_hint, traits::Group};
   use ::bellpepper_core::{num::AllocatedNum, ConstraintSystem, SynthesisError};
   use ff::{Field, PrimeField};
   use rand::rngs::OsRng;
@@ -166,12 +166,12 @@ mod tests {
     // First create the shape
     let mut cs: TestShapeCS<G> = TestShapeCS::new();
     let _ = synthesize_tiny_r1cs_bellpepper(&mut cs, None);
-    let (shape, ck) = cs.r1cs_shape();
+    let (shape, ck) = cs.r1cs_shape(&*default_ck_hint());
     let ro_consts =
       <<G as Group>::RO as ROTrait<<G as Group>::Base, <G as Group>::Scalar>>::Constants::default();
 
     // Now get the instance and assignment for one instance
-    let mut cs: SatisfyingAssignment<G> = SatisfyingAssignment::new();
+    let mut cs = SatisfyingAssignment::<G>::new();
     let _ = synthesize_tiny_r1cs_bellpepper(&mut cs, Some(G::Scalar::from(5)));
     let (U1, W1) = cs.r1cs_instance_and_witness(&shape, &ck).unwrap();
 
@@ -179,7 +179,7 @@ mod tests {
     assert!(shape.is_sat(&ck, &U1, &W1).is_ok());
 
     // Now get the instance and assignment for second instance
-    let mut cs: SatisfyingAssignment<G> = SatisfyingAssignment::new();
+    let mut cs = SatisfyingAssignment::<G>::new();
     let _ = synthesize_tiny_r1cs_bellpepper(&mut cs, Some(G::Scalar::from(135)));
     let (U2, W2) = cs.r1cs_instance_and_witness(&shape, &ck).unwrap();
 
@@ -327,7 +327,7 @@ mod tests {
     };
 
     // generate generators and ro constants
-    let ck = R1CS::<G>::commitment_key(&S);
+    let ck = R1CS::<G>::commitment_key(&S, &*default_ck_hint());
     let ro_consts =
       <<G as Group>::RO as ROTrait<<G as Group>::Base, <G as Group>::Scalar>>::Constants::default();
 

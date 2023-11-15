@@ -1,5 +1,5 @@
-//! There are two Verification Circuits. The primary and the secondary.
-//! Each of them is over a curve in a 2-cycle of curves.
+//! There are two augmented circuits: the primary and the secondary.
+//! Each of them is over a curve in a 2-cycle of elliptic curves.
 //! We have two running instances. Each circuit takes as input 2 hashes: one for each
 //! of the running instances. Each of these hashes is H(params = H(shape, ck), i, z0, zi, U).
 //! Each circuit folds the last invocation of the other into the running instance
@@ -172,6 +172,7 @@ impl<'a, G: Group, SC: StepCircuit<G::Base>> NovaAugmentedCircuit<'a, G, SC> {
         .as_ref()
         .and_then(|inputs| inputs.T.map(|T| T.to_coordinates())),
     )?;
+    T.check_on_curve(cs.namespace(|| "check T on curve"))?;
 
     Ok((params, i, z_0, z_i, U, u, T))
   }
@@ -367,6 +368,7 @@ mod tests {
 
   use crate::constants::{BN_LIMB_WIDTH, BN_N_LIMBS};
   use crate::provider;
+  use crate::traits::snark::default_ck_hint;
   use crate::{
     bellpepper::r1cs::{NovaShape, NovaWitness},
     gadgets::utils::scalar_as_base,
@@ -392,7 +394,7 @@ mod tests {
       NovaAugmentedCircuit::new(primary_params, None, &tc1, ro_consts1.clone());
     let mut cs: TestShapeCS<G1> = TestShapeCS::new();
     let _ = circuit1.synthesize(&mut cs);
-    let (shape1, ck1) = cs.r1cs_shape();
+    let (shape1, ck1) = cs.r1cs_shape(&*default_ck_hint());
     assert_eq!(cs.num_constraints(), num_constraints_primary);
 
     let tc2 = TrivialCircuit::default();
@@ -401,12 +403,12 @@ mod tests {
       NovaAugmentedCircuit::new(secondary_params, None, &tc2, ro_consts2.clone());
     let mut cs: TestShapeCS<G2> = TestShapeCS::new();
     let _ = circuit2.synthesize(&mut cs);
-    let (shape2, ck2) = cs.r1cs_shape();
+    let (shape2, ck2) = cs.r1cs_shape(&*default_ck_hint());
     assert_eq!(cs.num_constraints(), num_constraints_secondary);
 
     // Execute the base case for the primary
     let zero1 = <<G2 as Group>::Base as Field>::ZERO;
-    let mut cs1: SatisfyingAssignment<G1> = SatisfyingAssignment::new();
+    let mut cs1 = SatisfyingAssignment::<G1>::new();
     let inputs1: NovaAugmentedCircuitInputs<G2> = NovaAugmentedCircuitInputs::new(
       scalar_as_base::<G1>(zero1), // pass zero for testing
       zero1,
@@ -425,7 +427,7 @@ mod tests {
 
     // Execute the base case for the secondary
     let zero2 = <<G1 as Group>::Base as Field>::ZERO;
-    let mut cs2: SatisfyingAssignment<G2> = SatisfyingAssignment::new();
+    let mut cs2 = SatisfyingAssignment::<G2>::new();
     let inputs2: NovaAugmentedCircuitInputs<G1> = NovaAugmentedCircuitInputs::new(
       scalar_as_base::<G2>(zero2), // pass zero for testing
       zero2,
@@ -451,7 +453,7 @@ mod tests {
     let ro_consts2: ROConstantsCircuit<PastaG1> = PoseidonConstantsCircuit::default();
 
     test_recursive_circuit_with::<PastaG1, PastaG2>(
-      &params1, &params2, ro_consts1, ro_consts2, 9815, 10347,
+      &params1, &params2, ro_consts1, ro_consts2, 9825, 10357,
     );
   }
 
@@ -467,7 +469,7 @@ mod tests {
     test_recursive_circuit_with::<
       provider::bn256_grumpkin::bn256::Point,
       provider::bn256_grumpkin::grumpkin::Point,
-    >(&params1, &params2, ro_consts1, ro_consts2, 9983, 10536);
+    >(&params1, &params2, ro_consts1, ro_consts2, 9993, 10546);
   }
 
   #[test]
@@ -482,6 +484,6 @@ mod tests {
     test_recursive_circuit_with::<
       provider::secp_secq::secp256k1::Point,
       provider::secp_secq::secq256k1::Point,
-    >(&params1, &params2, ro_consts1, ro_consts2, 10262, 10959);
+    >(&params1, &params2, ro_consts1, ro_consts2, 10272, 10969);
   }
 }
