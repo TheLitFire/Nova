@@ -6,8 +6,9 @@ use crate::{
     keccak::Keccak256Transcript,
     pedersen::CommitmentEngine,
     poseidon::{PoseidonRO, PoseidonROCircuit},
+    CompressedGroup, DlogGroup,
   },
-  traits::{CompressedGroup, Group, PrimeFieldExt, TranscriptReprTrait},
+  traits::{Engine, Group, PrimeFieldExt, TranscriptReprTrait},
 };
 use digest::{ExtendableOutput, Update};
 use ff::{FromUniformBytes, PrimeField};
@@ -38,32 +39,32 @@ pub mod secq256k1 {
   };
 }
 
-impl<G: Group> TranscriptReprTrait<G> for secp256k1::Base {
-  fn to_transcript_bytes(&self) -> Vec<u8> {
-    self.to_repr().to_vec()
-  }
-}
+/// An implementation of the Nova `Engine` trait with Secp256k1 curve and Pedersen commitment scheme
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Secp256k1Engine;
 
-impl<G: Group> TranscriptReprTrait<G> for secp256k1::Scalar {
-  fn to_transcript_bytes(&self) -> Vec<u8> {
-    self.to_repr().to_vec()
-  }
-}
+/// An implementation of the Nova `Engine` trait with Secp256k1 curve and Pedersen commitment scheme
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Secq256k1Engine;
 
 impl_traits!(
+  Secp256k1Engine,
   secp256k1,
   Secp256k1Compressed,
   Secp256k1,
   Secp256k1Affine,
-  "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+  "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+  "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"
 );
 
 impl_traits!(
+  Secq256k1Engine,
   secq256k1,
   Secq256k1Compressed,
   Secq256k1,
   Secq256k1Affine,
-  "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"
+  "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f",
+  "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
 );
 
 #[cfg(test)]
@@ -91,7 +92,7 @@ mod tests {
     for n in [
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 1021,
     ] {
-      let ck_par = <G as Group>::from_label(label, n);
+      let ck_par = <G as DlogGroup>::from_label(label, n);
       let ck_ser = from_label_serial(label, n);
       assert_eq!(ck_par.len(), n);
       assert_eq!(ck_ser.len(), n);
