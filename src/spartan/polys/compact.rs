@@ -335,8 +335,8 @@ impl<T: SmallScalar, Scalar: PrimeField> CompactPolynomial<T, Scalar> {
   /// when the polynomial is still in compact form.
   ///
   /// Returns (eval_0, eval_2) where:
-  /// - eval_0 = Σ_i Z[i] * eq[i]  (lower half, r=0)
-  /// - eval_2 = Σ_i (2*Z[n+i] - Z[i]) * (2*eq[n+i] - eq[i])  (r=2)
+  /// - `eval_0 = Σ_i Z[i] * eq[i]` (lower half, r=0)
+  /// - `eval_2 = Σ_i (2*Z[n+i] - Z[i]) * (2*eq[n+i] - eq[i])` (r=2)
   ///
   /// This avoids field multiplications for the Z terms in compact form.
   pub fn evaluation_points_quadratic_with_eq(&self, eq: &[Scalar]) -> (Scalar, Scalar) {

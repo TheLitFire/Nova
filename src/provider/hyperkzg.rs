@@ -967,6 +967,14 @@ pub struct EvaluationEngine<E: Engine> {
   _p: PhantomData<E>,
 }
 
+/// HyperKZG with sequential quotient openings to reduce overlapping prover scratch.
+/// Division, each MSM and intermediate batch commitments retain their parallelism.
+/// Keys, arguments and transcript requirements match [`EvaluationEngine`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrderedEvaluationEngine<E: Engine> {
+  _p: PhantomData<E>,
+}
+
 impl<E: Engine> EvaluationEngine<E>
 where
   E::GE: PairingGroup,
@@ -1047,6 +1055,69 @@ where
     point: &[E::Scalar],
     _eval: &E::Scalar,
   ) -> Result<Self::EvaluationArgument, NovaError> {
+    Self::prove_with_order::<false>(ck, transcript, hat_P, point)
+  }
+
+  fn verify(
+    vk: &Self::VerifierKey,
+    transcript: &mut E::TE,
+    C: &Commitment<E>,
+    x: &[E::Scalar],
+    y: &E::Scalar,
+    pi: &Self::EvaluationArgument,
+  ) -> Result<(), NovaError> {
+    Self::verify_argument(vk, transcript, C, x, y, pi)
+  }
+}
+
+impl<E> EvaluationEngineTrait<E> for OrderedEvaluationEngine<E>
+where
+  E: Engine<CE = CommitmentEngine<E>>,
+  E::GE: PairingGroup,
+{
+  type EvaluationArgument = EvaluationArgument<E>;
+  type ProverKey = ProverKey<E>;
+  type VerifierKey = VerifierKey<E>;
+
+  fn setup(ck: &CommitmentKey<E>) -> Result<(Self::ProverKey, Self::VerifierKey), NovaError> {
+    EvaluationEngine::<E>::setup(ck)
+  }
+
+  fn prove(
+    ck: &CommitmentKey<E>,
+    _pk: &Self::ProverKey,
+    transcript: &mut E::TE,
+    _C: &Commitment<E>,
+    hat_P: &[E::Scalar],
+    point: &[E::Scalar],
+    _eval: &E::Scalar,
+  ) -> Result<Self::EvaluationArgument, NovaError> {
+    EvaluationEngine::<E>::prove_with_order::<true>(ck, transcript, hat_P, point)
+  }
+
+  fn verify(
+    vk: &Self::VerifierKey,
+    transcript: &mut E::TE,
+    C: &Commitment<E>,
+    x: &[E::Scalar],
+    y: &E::Scalar,
+    pi: &Self::EvaluationArgument,
+  ) -> Result<(), NovaError> {
+    EvaluationEngine::<E>::verify(vk, transcript, C, x, y, pi)
+  }
+}
+
+impl<E> EvaluationEngine<E>
+where
+  E: Engine<CE = CommitmentEngine<E>>,
+  E::GE: PairingGroup,
+{
+  fn prove_with_order<const ORDERED: bool>(
+    ck: &CommitmentKey<E>,
+    transcript: &mut E::TE,
+    hat_P: &[E::Scalar],
+    point: &[E::Scalar],
+  ) -> Result<EvaluationArgument<E>, NovaError> {
     let x: Vec<E::Scalar> = point.to_vec();
 
     //////////////// begin helper closures //////////
@@ -1173,11 +1244,14 @@ where
       let q = Self::get_batch_challenge(&v, transcript);
       let B = kzg_compute_batch_polynomial(f, q);
 
-      // Now open B at u0, ..., u_{t-1}
-      let w = u
-        .into_par_iter()
-        .map(|ui| kzg_open(&B, *ui))
-        .collect::<Vec<Commitment<E>>>();
+      // Both traversals preserve the three opening positions in the argument.
+      let w = if ORDERED {
+        u.iter().map(|ui| kzg_open(&B, *ui)).collect::<Vec<_>>()
+      } else {
+        u.into_par_iter()
+          .map(|ui| kzg_open(&B, *ui))
+          .collect::<Vec<_>>()
+      };
 
       // The prover computes the challenge to keep the transcript in the same
       // state as that of the verifier
@@ -1231,13 +1305,13 @@ where
   }
 
   /// A method to verify purported evaluations of a batch of polynomials
-  fn verify(
-    vk: &Self::VerifierKey,
+  fn verify_argument(
+    vk: &VerifierKey<E>,
     transcript: &mut <E as Engine>::TE,
     C: &Commitment<E>,
     x: &[E::Scalar],
     y: &E::Scalar,
-    pi: &Self::EvaluationArgument,
+    pi: &EvaluationArgument<E>,
   ) -> Result<(), NovaError> {
     let ell = x.len();
 
@@ -1386,45 +1460,102 @@ mod tests {
     // poly is in eval. representation; evaluated at [(0,0), (0,1), (1,0), (1,1)]
     let poly = vec![Fr::from(1), Fr::from(2), Fr::from(2), Fr::from(4)];
 
-    let C = CommitmentEngine::commit(&ck, &poly, &<E as Engine>::Scalar::ZERO);
-
-    let test_inner = |point: Vec<Fr>, eval: Fr| -> Result<(), NovaError> {
-      let mut tr = Keccak256Transcript::new(b"TestEval");
-      let proof = EvaluationEngine::prove(&ck, &pk, &mut tr, &C, &poly, &point, &eval).unwrap();
-      let mut tr = Keccak256Transcript::new(b"TestEval");
-      EvaluationEngine::verify(&vk, &mut tr, &C, &point, &eval, &proof)
+    let test_inner = |poly: &[Fr], point: Vec<Fr>, eval: Fr| -> Result<(), NovaError> {
+      let C = CommitmentEngine::<E>::commit(&ck, poly, &Fr::ZERO);
+      let prefix = || {
+        let mut tr = Keccak256Transcript::new(b"TestEval");
+        tr.absorb(b"C", &C);
+        tr.absorb(b"x", &point.as_slice());
+        tr.absorb(b"y", &eval);
+        tr
+      };
+      let mut tr = prefix();
+      let proof = EvaluationEngine::prove(&ck, &pk, &mut tr, &C, poly, &point, &eval).unwrap();
+      // Both scheduling APIs share key/argument types and transcript semantics.
+      // Compare the entire proof, including ordered quotient commitments, then
+      // verify each engine's proof through the other API. False claims below
+      // must still reject; proof-byte agreement alone does not establish validity.
+      let (ordered_pk, ordered_vk) = OrderedEvaluationEngine::<E>::setup(&ck).unwrap();
+      let mut ordered_tr = prefix();
+      let ordered =
+        OrderedEvaluationEngine::prove(&ck, &ordered_pk, &mut ordered_tr, &C, poly, &point, &eval)
+          .unwrap();
+      let config = bincode::config::legacy();
+      assert_eq!(
+        bincode::serde::encode_to_vec(&proof, config).unwrap(),
+        bincode::serde::encode_to_vec(&ordered, config).unwrap()
+      );
+      let next = tr.squeeze(b"continuation").unwrap();
+      assert_eq!(next, ordered_tr.squeeze(b"continuation").unwrap());
+      let mut verifier = prefix();
+      let result = EvaluationEngine::verify(&vk, &mut verifier, &C, &point, &eval, &ordered);
+      let mut ordered_verifier = prefix();
+      let ordered_result = OrderedEvaluationEngine::verify(
+        &ordered_vk,
+        &mut ordered_verifier,
+        &C,
+        &point,
+        &eval,
+        &proof,
+      );
+      assert_eq!(result.is_ok(), ordered_result.is_ok());
+      if result.is_ok() {
+        assert_eq!(next, verifier.squeeze(b"continuation").unwrap());
+        assert_eq!(next, ordered_verifier.squeeze(b"continuation").unwrap());
+      }
+      result
     };
 
     // Call the prover with a (point, eval) pair.
     // The prover does not recompute so it may produce a proof, but it should not verify
     let point = vec![Fr::from(0), Fr::from(0)];
     let eval = Fr::ONE;
-    assert!(test_inner(point, eval).is_ok());
+    assert!(test_inner(&poly, point, eval).is_ok());
 
     let point = vec![Fr::from(0), Fr::from(1)];
     let eval = Fr::from(2);
-    assert!(test_inner(point, eval).is_ok());
+    assert!(test_inner(&poly, point, eval).is_ok());
 
     let point = vec![Fr::from(1), Fr::from(1)];
     let eval = Fr::from(4);
-    assert!(test_inner(point, eval).is_ok());
+    assert!(test_inner(&poly, point, eval).is_ok());
 
     let point = vec![Fr::from(0), Fr::from(2)];
     let eval = Fr::from(3);
-    assert!(test_inner(point, eval).is_ok());
+    assert!(test_inner(&poly, point, eval).is_ok());
 
     let point = vec![Fr::from(2), Fr::from(2)];
     let eval = Fr::from(9);
-    assert!(test_inner(point, eval).is_ok());
+    assert!(test_inner(&poly, point, eval).is_ok());
 
     // Try a couple incorrect evaluations and expect failure
     let point = vec![Fr::from(2), Fr::from(2)];
     let eval = Fr::from(50);
-    assert!(test_inner(point, eval).is_err());
+    assert!(test_inner(&poly, point, eval).is_err());
 
     let point = vec![Fr::from(0), Fr::from(2)];
     let eval = Fr::from(4);
-    assert!(test_inner(point, eval).is_err());
+    assert!(test_inner(&poly, point, eval).is_err());
+
+    // Zero and constant tables exercise degenerate quotient commitments. Seeded
+    // full-field values cover general MSM inputs; all-zero/all-one points retain
+    // the multilinear boundary cases. Both APIs must also reject false claims.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(823);
+    for values in [
+      vec![Fr::ZERO; n],
+      vec![Fr::from(9); n],
+      (0..n).map(|_| Fr::random(&mut rng)).collect(),
+    ] {
+      for point in [
+        vec![Fr::ZERO; 2],
+        vec![Fr::ONE; 2],
+        vec![Fr::from(3), Fr::from(7)],
+      ] {
+        let eval = MultilinearPolynomial::evaluate_with(&values, &point);
+        assert!(test_inner(&values, point.clone(), eval).is_ok());
+        assert!(test_inner(&values, point, eval + Fr::ONE).is_err());
+      }
+    }
   }
 
   #[test]
